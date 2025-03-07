@@ -1,340 +1,224 @@
 #pragma once
-#include <ntddk.h>
+#include <ntifs.h>
 
-#define MODULE_PREFIX "kUtils"
-#define LOG(s, ...) DbgPrint(MODULE_PREFIX "%s::" s "\n", __FUNCTION__, __VA_ARGS__)
+#pragma warning(disable: 4996)
 
-// ----------------------- // PROCESS LIST // ----------------------- //
+#define MODULE_PREFIX "KUtils "
+#define LOGu(s, ...) DbgPrint(MODULE_PREFIX "::%s:: " s "\n",__FUNCTION__,__VA_ARGS__)
 
 #define PROCESS_LIST_TAG 'tslP'
 
+// Global operator new and delete for kernel-mode
+void* __cdecl operator new(size_t size) {
+	return ExAllocatePoolWithTag(NonPagedPool, size, PROCESS_LIST_TAG);
+}
 
-typedef struct _PROCESS_LIST PROCESS_LIST, * PPROCESS_LIST;
-typedef NTSTATUS (*PFN_PROCESS_LIST_ADD) (IN PPROCESS_LIST List, IN HANDLE ProcessId);
-typedef NTSTATUS(*PFN_PROCESS_LIST_REMOVE)(IN PPROCESS_LIST List, IN HANDLE ProcessId);
-typedef NTSTATUS(*PFN_PROCESS_LIST_CLEAR)(IN PPROCESS_LIST List);
-typedef BOOLEAN(*PFN_PROCESS_LIST_CONTAINSE)(IN PPROCESS_LIST List, IN HANDLE ProcessId);
-typedef VOID(*PFN_PROCESS_LIST_PRINT)(IN PPROCESS_LIST List);
-typedef VOID(*PFN_PROCESS_LIST_DESTROY)(IN PPROCESS_LIST List);
+void __cdecl operator delete(void* p) {
+	if (p) {
+		ExFreePoolWithTag(p, PROCESS_LIST_TAG);
+	}
+}
+
+// Sized delete operator - needed for classes with virtual destructors or when using certain compiler options
+void __cdecl operator delete(void* p, size_t size) {
+	UNREFERENCED_PARAMETER(size);  // We don't use the size parameter
+	if (p) {
+		ExFreePoolWithTag(p, PROCESS_LIST_TAG);
+	}
+}
+
+typedef struct _LOCK
+{
+	PKSPIN_LOCK m_pLock;
+	KIRQL m_OldIrql;
+
+	_LOCK(PKSPIN_LOCK pLock) : m_pLock(pLock)
+	{
+		KeAcquireSpinLock(m_pLock, &m_OldIrql);
+	}
+
+	~_LOCK()
+	{
+		KeReleaseSpinLock(m_pLock, m_OldIrql);
+	}
+
+}LOCK, * PLOCK;
+
 
 typedef struct _PROCESS_ENTRY
 {
-	LIST_ENTRY Link;
-	HANDLE ProcessId;
-} PROCESS_ENTRY, *PPROCESS_ENTRY;
+	LIST_ENTRY m_Link;
+	ULONG m_ProcessId;
+
+	// Constructor
+	_PROCESS_ENTRY(ULONG ProcessId) : m_ProcessId(ProcessId) {}
+
+	// Destructor
+	~_PROCESS_ENTRY() = default;
+
+
+}PROCESS_ENTRY, * PPROCESS_ENTRY;
+
+
+// Helper method to to get _PROCESS_ENTRY out of the LIST_ENTRY
+PPROCESS_ENTRY ProcessFromListEntry(PLIST_ENTRY pListEntry)
+{
+	return CONTAINING_RECORD(pListEntry, PROCESS_ENTRY, m_Link);
+}
+
 
 typedef struct _PROCESS_LIST
 {
+	
+	LIST_ENTRY m_ListHead;
+	KSPIN_LOCK m_Lock;
+	BOOLEAN m_Initialized = FALSE;
 
-	LIST_ENTRY ListHead;
-	KSPIN_LOCK Lock;
-	BOOLEAN Initialized;
-
-	// Methods
-	PFN_PROCESS_LIST_ADD Add;
-	PFN_PROCESS_LIST_REMOVE Remove;
-	PFN_PROCESS_LIST_CONTAINSE Contains;
-	PFN_PROCESS_LIST_PRINT Print;
-	PFN_PROCESS_LIST_CLEAR Clear;
-	PFN_PROCESS_LIST_DESTROY Destroy;
-
-
-
-} PROCESS_LIST, *PPROCESS_LIST;
-
-// Function prototypes (internal implementation)
-NTSTATUS ProcessListAdd(IN PPROCESS_LIST List, IN HANDLE ProcessId);
-NTSTATUS ProcessListRemove(IN PPROCESS_LIST List, IN HANDLE ProcessId);
-NTSTATUS ProcessListClear(IN PPROCESS_LIST List);
-BOOLEAN ProcessListContains(IN PPROCESS_LIST List, IN HANDLE ProcessId);
-VOID ProcessListPrint(IN PPROCESS_LIST List);
-VOID ProcessListDestroy(IN PPROCESS_LIST List);
-
-
-// Constructor: Create and initialize a new process list
-PPROCESS_LIST
-ProcessListCreate(VOID)
-{
-	PPROCESS_LIST pList;
-
-	pList = (PPROCESS_LIST)ExAllocatePoolWithTag(
-		NonPagedPool,
-		sizeof(PROCESS_LIST),
-		PROCESS_LIST_TAG
-	);
-
-	if (pList == NULL)
+	// Construct
+	_PROCESS_LIST()
 	{
-		LOG("Failed allocating List");
-		return NULL;
+		InitializeListHead(&m_ListHead);
+		KeInitializeSpinLock(&m_Lock);
+		m_Initialized = TRUE;
 	}
 
-	pList->Add = ProcessListAdd;
-	pList->Remove = ProcessListRemove;
-	pList->Contains = ProcessListContains;
-	pList->Print = ProcessListPrint;
-	pList->Destroy = ProcessListDestroy;
-
-	pList->Initialized = TRUE;
-
-	return pList;
-}
-
-// Clear all entries from the list
-NTSTATUS
-ProcessListClear(
-	IN PPROCESS_LIST pList
-)
-{
-	NTSTATUS Status = STATUS_SUCCESS;
-	PLIST_ENTRY pEntry;
-	PPROCESS_ENTRY pProcessEntry;
-	KIRQL oldIrql;
-	ULONG Count = 0;
-
-	// Validate list
-	if (pList == NULL)
+	// Destructor
+	~_PROCESS_LIST()
 	{
-		Status =  STATUS_INVALID_PARAMETER;
-		LOG("Failed clearing list, the pList is NULL, 0x%X", Status);
-		return Status;
+		Clear();
 	}
 
-	// Make sure we are initialized
-	if (!pList->Initialized)
+	NTSTATUS Clear()
 	{
-		Status = STATUS_INVALID_PARAMETER;
-		LOG("Failed clearing list, the pList is not initialized, 0x%X", Status);
-		return Status;
-	}
+		ULONG Count = 0;
+		ULONG Total = 0;
 
-	// Remove all entries
-	KeAcquireSpinLock(&pList->Lock, &oldIrql);
-
-	while (!IsListEmpty(&pList->ListHead))
-	{
-		pEntry = RemoveHeadList(&pList->ListHead);
-		pProcessEntry = CONTAINING_RECORD(pEntry, PROCESS_ENTRY, Link);
-		if (pProcessEntry != NULL)
 		{
-			ExFreePoolWithTag(pProcessEntry, PROCESS_LIST_TAG);
-			Count++;
+			LOCK TempLock(&m_Lock);
+
+			while (!IsListEmpty(&m_ListHead))
+			{
+				Total++;
+				PLIST_ENTRY pEntry = RemoveHeadList(&m_ListHead);
+				PPROCESS_ENTRY pProcessEntry = ProcessFromListEntry(pEntry);
+				if (pProcessEntry != NULL)
+				{
+					delete pProcessEntry;
+					Count++;
+				}
+			}
 		}
 
-	}
-	
-	KeReleaseSpinLock(&pList->Lock, oldIrql);
-	
-	LOG("Cleared &lu processes from the list", Count);
-	return Status;
-}
-
-// Check if a process ID is in the list
-BOOLEAN
-ProcessListContains(
-	IN PPROCESS_LIST pList,
-	IN HANDLE ProcessId
-)
-{
-	PLIST_ENTRY pEntry;
-	PPROCESS_ENTRY	pProcessEntry;
-	KIRQL oldIrql;
-	BOOLEAN found = FALSE;
-
-	// Validate input
-	if (pList == NULL || ProcessId == NULL) {
-		return FALSE;
+		LOGu("Removed %lu out of %lu entries from the list", Count, Total);
+		if (Total != Count)
+			return STATUS_UNSUCCESSFUL;
+		else
+			return STATUS_SUCCESS;
 	}
 
-	// Make sure we're initialized
-	if (!pList->Initialized) {
-		return FALSE;
-	}
-
-	// Search the list with lock protection
-	KeAcquireSpinLock(&pList->Lock, &oldIrql);
-
-	pEntry = pList->ListHead.Flink;
-	while (pEntry != &pList->ListHead) {
-		pProcessEntry = CONTAINING_RECORD(pEntry, PROCESS_ENTRY, Link);
-
-		if (pProcessEntry->ProcessId == ProcessId) {
-			// Found the process
-			found = TRUE;
-			break;
+	BOOLEAN Contains(ULONG Pid)
+	{
+		if (Pid == 0)
+		{
+			LOGu("Pid is 0, invalid");
+			return FALSE;
 		}
 
-		pEntry = pEntry->Flink;
-	}
+		BOOLEAN Found = FALSE;
 
-	KeReleaseSpinLock(&pList->Lock, oldIrql);
+		// Scope the lock
+		{
+			LOCK TempLock(&m_Lock);
 
-	return found;
-}
+			for (PLIST_ENTRY pEntry = m_ListHead.Flink;
+				pEntry != &m_ListHead;
+				pEntry = pEntry->Flink)
+			{
+				PPROCESS_ENTRY pProcessEntry = ProcessFromListEntry(pEntry);
+				
+				if (pProcessEntry->m_ProcessId == Pid)
+				{
+					LOGu("Found entry with Pid: (%lu)");
+					Found = TRUE;
+					break;
+				}
+			}
 
-VOID
-ProcessListDestroy(
-	IN PPROCESS_LIST List
-)
-{
-	// Validate input
-	if (List == NULL) {
-		return;
-	}
-
-	// Clear all entries from the list
-	ProcessListClear(List);
-
-	// Free the list object itself
-	ExFreePoolWithTag(List, PROCESS_LIST_TAG);
-}
-
-
-// Remove a process ID from the list
-NTSTATUS
-ProcessListRemove(
-	IN PPROCESS_LIST pList,
-	IN HANDLE ProcessId
-)
-{
-	PLIST_ENTRY pEntry;
-	PPROCESS_ENTRY pProcessEntry;
-	KIRQL oldIrql;
-	BOOLEAN found = FALSE;
-
-	// Validate input
-	if (pList == NULL || ProcessId == NULL) {
-		return STATUS_INVALID_PARAMETER;
-	}
-
-	// Make sure we're initialized
-	if (!pList->Initialized) {
-		return STATUS_INVALID_PARAMETER;
-	}
-
-	// Find and remove the entry with lock protection
-	KeAcquireSpinLock(&pList->Lock, &oldIrql);
-
-	pEntry = pList->ListHead.Flink;
-	while (pEntry != &pList->ListHead) {
-		pProcessEntry = CONTAINING_RECORD(pEntry, PROCESS_ENTRY, Link);
-
-		// Save the next entry before potentially removing the current one
-		PLIST_ENTRY nextEntry = pEntry->Flink;
-
-		if (pProcessEntry->ProcessId == ProcessId) {
-			// Found the process, remove it
-			RemoveEntryList(&pProcessEntry->Link);
-			ExFreePoolWithTag(pProcessEntry, PROCESS_LIST_TAG);
-			found = TRUE;
-			break;
 		}
 
-		pEntry = nextEntry;
+		return Found;
 	}
 
-	KeReleaseSpinLock(&pList->Lock, oldIrql);
+	NTSTATUS Add(ULONG Pid)
+	{
+		if (Pid == 0)
+		{
+			LOGu("Pid is 0, invalid");
+			return STATUS_INVALID_PARAMETER;
+		}
 
-	if (!found) {
-		LOG("Process ID %llu not found in list\n", (ULONG64)ProcessId);
-		return STATUS_NOT_FOUND;
+		if (Contains(Pid))
+		{
+			LOGu("Pid already exists. (%lu)", Pid);
+			return STATUS_DUPLICATE_OBJECTID;
+		}
+
+		// Add PROCESS_ENTRY
+		PPROCESS_ENTRY pEntry = NULL;
+		pEntry = new PROCESS_ENTRY(Pid);
+
+		if (pEntry == NULL)
+		{
+			LOGu("Failed creating PROCESS_ENTRY from pid(%lu)", Pid);
+			return STATUS_INSUFFICIENT_RESOURCES;
+		}
+
+		{
+			LOCK TempLock(&m_Lock);
+			InsertTailList(&m_ListHead, &pEntry->m_Link);
+		}
+
+		LOGu("Added process pid(%lu) to the list");
+		return STATUS_SUCCESS;
 	}
 
-	LOG("Removed Process ID %llu from list\n", (ULONG64)ProcessId);
-	return STATUS_SUCCESS;
-}
+	NTSTATUS Remove(ULONG Pid)
+	{
+		if (Pid == 0)
+		{
+			LOGu("Pid is 0, invalid");
+			return STATUS_INVALID_PARAMETER;
+		}
 
-// Print all processes in the list (for debugging)
-VOID
-ProcessListPrint(
-	IN PPROCESS_LIST pList
-)
-{
-	PLIST_ENTRY pEntry;
-	PPROCESS_ENTRY pProcessEntry;
-	KIRQL oldIrql;
-	ULONG count = 0;
+		BOOLEAN Found = FALSE;
+		{
+			LOCK TempLock(&m_Lock);
 
-	// Validate input
-	if (pList == NULL) {
-		DbgPrint("Invalid process list pointer\n");
-		return;
+			for (PLIST_ENTRY pEntry = m_ListHead.Flink; pEntry != &m_ListHead; pEntry = pEntry->Flink)
+			{
+				PPROCESS_ENTRY pProcessEntry = ProcessFromListEntry(pEntry);
+
+				if (pProcessEntry->m_ProcessId == Pid)
+				{
+					LOGu("Found process pid(%lu), removing entry ...", Pid);
+					RemoveEntryList(pEntry);
+					delete pProcessEntry;
+					Found = TRUE;
+					break;
+				}
+			}
+		}
+
+		if (!Found)
+		{
+			LOGu("Process pid(%lu) not found in list", Pid);
+			return STATUS_NOT_FOUND;
+		}
+
+		LOGu("Removed Process PID %lu from list", Pid);
+		return STATUS_SUCCESS;
 	}
 
-	// Make sure we're initialized
-	if (!pList->Initialized) {
-		DbgPrint("Process list not initialized\n");
-		return;
-	}
+}PROCESS_LIST, *PPROCESS_LIST
+;
 
-	// Print all entries with lock protection
-	KeAcquireSpinLock(&pList->Lock, &oldIrql);
-
-	DbgPrint("Process List Contents:\n");
-	DbgPrint("---------------------\n");
-
-	pEntry = pList->ListHead.Flink;
-	while (pEntry != &pList->ListHead) {
-		pProcessEntry = CONTAINING_RECORD(pEntry, PROCESS_ENTRY, Link);
-		DbgPrint("[%03lu] Process ID: %llu\n", count, (ULONG64)pProcessEntry->ProcessId);
-		pEntry = pEntry->Flink;
-		count++;
-	}
-
-	if (count == 0) {
-		DbgPrint("(List is empty)\n");
-	}
-
-	DbgPrint("Total: %lu processes\n", count);
-
-	KeReleaseSpinLock(&pList->Lock, oldIrql);
-}
-
-// Add a process ID to the list
-NTSTATUS
-ProcessListAdd(
-	IN PPROCESS_LIST pList,
-	IN HANDLE ProcessId
-)
-{
-	PPROCESS_ENTRY pEntry;
-	KIRQL oldIrql;
-
-	// Validate input
-	if (pList == NULL || ProcessId == NULL) {
-		return STATUS_INVALID_PARAMETER;
-	}
-
-	// Make sure we're initialized
-	if (!pList->Initialized) {
-		return STATUS_INVALID_PARAMETER;
-	}
-
-	// Check if process is already in the list (optional)
-	if (ProcessListContains(pList, ProcessId)) {
-		LOG("Process ID %llu already in list\n", (ULONG64)ProcessId);
-		return STATUS_DUPLICATE_OBJECTID;
-	}
-
-	// Allocate memory for the entry
-	pEntry = (PPROCESS_ENTRY)ExAllocatePoolWithTag(
-		NonPagedPool,
-		sizeof(PROCESS_ENTRY),
-		PROCESS_LIST_TAG
-	);
-
-	if (pEntry == NULL) {
-		return STATUS_INSUFFICIENT_RESOURCES;
-	}
-
-	// Initialize the entry
-	pEntry->ProcessId = ProcessId;
-
-	// Add the entry to the list with lock protection
-	KeAcquireSpinLock(&pList->Lock, &oldIrql);
-	InsertTailList(&pList->ListHead, &pEntry->Link);
-	KeReleaseSpinLock(&pList->Lock, oldIrql);
-
-	LOG("Added Process ID %llu to list\n", (ULONG64)ProcessId);
-	return STATUS_SUCCESS;
-}

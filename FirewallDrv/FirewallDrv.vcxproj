@@ -82,6 +82,7 @@
     </DriverSign>
     <Link>
       <AdditionalLibraryDirectories>$(DDK_LIB_PATH)wdf01.lib$(DDK_LIB_PATH)wdfldr.lib</AdditionalLibraryDirectories>
+      <AdditionalDependencies>%(AdditionalDependencies);$(KernelBufferOverflowLib);$(DDK_LIB_PATH)ntoskrnl.lib;$(DDK_LIB_PATH)hal.lib;$(DDK_LIB_PATH)wmilib.lib;fwpkclnt.lib</AdditionalDependencies>
     </Link>
     <ClCompile>
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)$(DDK_INC_PATH)$(KIT_SHARED_INC_PATH)</AdditionalIncludeDirectories>
@@ -93,6 +94,7 @@
     </DriverSign>
     <Link>
       <AdditionalLibraryDirectories>$(DDK_LIB_PATH)wdf01.lib$(DDK_LIB_PATH)wdfldr.lib</AdditionalLibraryDirectories>
+      <AdditionalDependencies>%(AdditionalDependencies);$(KernelBufferOverflowLib);$(DDK_LIB_PATH)ntoskrnl.lib;$(DDK_LIB_PATH)hal.lib;$(DDK_LIB_PATH)wmilib.lib;fwpkclnt.lib</AdditionalDependencies>
     </Link>
     <ClCompile>
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)$(DDK_INC_PATH)$(KIT_SHARED_INC_PATH)</AdditionalIncludeDirectories>
@@ -101,6 +103,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
     <Link>
       <AdditionalLibraryDirectories>$(DDK_LIB_PATH)wdf01.lib$(DDK_LIB_PATH)wdfldr.lib</AdditionalLibraryDirectories>
+      <AdditionalDependencies>%(AdditionalDependencies);$(KernelBufferOverflowLib);$(DDK_LIB_PATH)ntoskrnl.lib;$(DDK_LIB_PATH)hal.lib;$(DDK_LIB_PATH)wmilib.lib;fwpkclnt.lib</AdditionalDependencies>
     </Link>
     <ClCompile>
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)$(DDK_INC_PATH)$(KIT_SHARED_INC_PATH)</AdditionalIncludeDirectories>
@@ -109,6 +112,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
     <Link>
       <AdditionalLibraryDirectories>$(DDK_LIB_PATH)wdf01.lib$(DDK_LIB_PATH)wdfldr.lib</AdditionalLibraryDirectories>
+      <AdditionalDependencies>%(AdditionalDependencies);$(KernelBufferOverflowLib);$(DDK_LIB_PATH)ntoskrnl.lib;$(DDK_LIB_PATH)hal.lib;$(DDK_LIB_PATH)wmilib.lib;fwpkclnt.lib</AdditionalDependencies>
     </Link>
     <ClCompile>
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)$(DDK_INC_PATH)$(KIT_SHARED_INC_PATH)</AdditionalIncludeDirectories>
@@ -121,7 +125,9 @@
     <ClCompile Include="drv.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="common.h" />
     <ClInclude Include="drv.h" />
+    <ClInclude Include="kutils.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
